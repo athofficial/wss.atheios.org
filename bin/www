@@ -41,7 +41,7 @@ const {MISC_makeid, MISC_maketoken} = require('../misc');
 
 
 
-const wss = new WebSocket.Server({ port: 3010 });
+const wss = new WebSocket.Server({ port: 3010});
 logger.info("#bin.www: Websocket server enabled on port 3010");
 wss.on('connection', (ws, req) => {
   // Let us check first if the request comes from a valid game id
@@ -49,18 +49,22 @@ wss.on('connection', (ws, req) => {
   var urlarray = req.url.split('/');
   // urlarray[1] is 'ws'
   // urlarray[2] is gameid
-  // urlarray[3) is gameid on secure connection
+  // urlarray[3] is gameid on secure connection
+  // urlarray[4] is the protocol id
+  logger.info("Passed arrays: %s",urlarray);
+
   if (urlarray[2]==="") {
     urlarray[2]=urlarray[3];
+    urlarray[3]=urlarray[4];
   }
   if (urlarray[1]==="ws") {
     // initial access which we redirect to another server
     logger.info("Initial access.");
     if (config.development) {
-      var jstring="{\"@class\":\".AuthenticatedConnectRequest\", \"connectUrl\":\"ws://localhost:3010/fs/"+ urlarray[2] +"\", \"requestId\":\"0\"}";
+      var jstring="{\"@class\":\".AuthenticatedConnectRequest\", \"connectUrl\":\"ws://localhost:3010/fs/"+ urlarray[2] + "/" + urlarray[3] + "\", \"requestId\":\"0\"}";
     }
     else {
-      var jstring="{\"@class\":\".AuthenticatedConnectRequest\", \"connectUrl\":\"wss://wss.atheios.org/fs/"+ urlarray[2] +"\", \"requestId\":\"0\"}";
+      var jstring="{\"@class\":\".AuthenticatedConnectRequest\", \"connectUrl\":\"wss://wss.atheios.org/fs/"+ urlarray[2] + "/" + urlarray[3] +"\", \"requestId\":\"0\"}";
     };
     logger.info("Return msg on connection: %s", jstring);
     ws.send(jstring);
@@ -68,7 +72,7 @@ wss.on('connection', (ws, req) => {
   } else {
     if (urlarray[1] === "fs") {
       // Redirected access
-      logger.info("Redirected access with game id %s, Atheios version %s",urlarray[2],urlarray[3]);
+      logger.info("Redirected access with game id %s, GARP version %s",urlarray[2],urlarray[3]);
 
       var sql = "SELECT * FROM gameasset WHERE asset_token=" + pool.escape(urlarray[2]) + " AND asset_ready=2";
       logger.info("SQL: %s", sql);
@@ -106,6 +110,11 @@ wss.on('connection', (ws, req) => {
                 var resultType = result['@class'];
 
                 switch(resultType) {
+
+                  //introduced in version2:
+                  case '.GameInfoRequest':
+                    func_GameInfoRequest(ws, randstr, rows, result);
+                    break;
                   case '.AuthenticatedConnectRequest':
                     func_AuthenticatedConnectRequest(ws, randstr, rows, result);
                     break;
@@ -133,7 +142,7 @@ wss.on('connection', (ws, req) => {
             logger.warn("GameID cannot be found:", urlarray[2]);
             jstring = "{\"@class\":\".AuthenticatedConnectResponse\", \"error\": \"Unknown GameID\", \"requestId\":\"0\"}";
             ws.send(jstring);
-            ws.close(3004, "ERR: game secrete not correct");
+            ws.close(4000, "ERR: game secrete not correct");
           }
         }
       });
@@ -211,19 +220,69 @@ function onListening() {
   debug('Listening on ' + bind);
 }
 
+function func_GameInfoRequest(ws, randstr, rows, result) {
+  var jstring;
+  var apikey = result['apikey'];
+
+  logger.info("Found GameInfoRequest");
+  if (result['protocolId'] > 1) {
+    var sql = "SELECT * FROM gameasset WHERE asset_token LIKE " + pool.escape(apikey);
+    logger.info("SQL: %s", sql);
+    pool.query(sql, function (error, rows1, fields) {
+      if (error) {
+        logger.error("#bin.www.func_authenticationRequest: %s", error);
+        throw(error);
+      } else {
+        if (rows1.length == 1) {
+          jstring = "{\n" +
+              "  \"@class\" : \".GameInfoResponse\",\n" +
+              "  \"sessionId\" : \"" + randstr + "\",\n" +
+              "  \"gameId\" : \"" + rows1[0].id + "\",\n" +
+              "  \"wage\" : \"" + rows1[0].asset_wage + "\",\n" +
+              "  \"player1\" : \"" + rows1[0].asset_player1/10 + "\",\n" +
+              "  \"player2\" : \"" + rows1[0].asset_player2/10 + "\",\n" +
+              "  \"player3\" : \"" + rows1[0].asset_player3/10 + "\",\n" +
+              "  \"player4\" : \"" + rows1[0].asset_player4/10 + "\",\n" +
+              "  \"player5\" : \"" + rows1[0].asset_player5/10 + "\",\n" +
+              "  \"scheme\" : \"" + rows1[0].asset_scheme + "\",\n" +
+              "  \"description\" : \"" + rows1[0].asset_description + "\",\n" +
+              "  \"requestId\" : \"" + result['requestId'] + "\"\n" +
+              "}";
+          ws.send(jstring);
+          logger.info("#bin.www.func_GameRequest: %s", jstring);
+        } else {
+          logger.warn("#bin.www.func_GameRequest: APIkey not found");
+          jstring = "{\n" +
+              "  \"@class\":\".GameInfoResponse\"," +
+              "  \"error\":{\"details\":\"APIkey not correct or not available.\"}," +
+              "  \"requestId\" : \"" + result['requestId'] + "\"\n" +
+              "}";
+          ws.send(jstring);
+
+        }
+      }
+    });
+  }
+}
+
+
 function func_AuthenticatedConnectRequest(ws, randstr, rows, result) {
   var jstring;
+  var apikey=result['apikey'];
 
   logger.info("Found AuthenticatedConnectRequest");
   var hmac = result['hmac'];
   var ownhmac = CryptoJS.enc.Base64.stringify(CryptoJS.HmacSHA256(randstr, rows[0].asset_secret));
   if (hmac === ownhmac) {
-    jstring = "{\"@class\":\".AuthenticatedConnectResponse\", \"requestId\":\"0\", \"sessionId\":\"" + randstr + "\"}";
-    ws.send(jstring);
+      jstring = "{\"@class\":\".AuthenticatedConnectResponse\", \"requestId\":\"0\", \"sessionId\":\"" + randstr + "\"}";
+      ws.send(jstring);
+
   } else {
     // Game ID cannot be found
     logger.warn("GameID + secret cannot be matched: %s <> %s",hmac, ownhmac);
-    // TODO Maybe we need to find a solution that the  with a wrong password we are not getting repeated attempts
+    jstring = "{\"@class\":\".AuthenticatedConnectResponse\", \"error\": \"Unknown GameID and secret not matched\", \"requestId\":\"0\"}";
+    ws.send(jstring);
+
     ws.close(4000, "ERR: game secrete not correct");
   }
 }
@@ -244,7 +303,6 @@ function func_AuthenticationRequest(ws, randstr, rows, result) {
     } else {
       if (rows.length == 1) {
         if (userpass!=undefined) {
-          logger.info("Hallo %s", userpass);
           bcrypt.compare(userpass, rows[0].password).then(function (res) {
             // res == true
             if (res == true) {
@@ -258,44 +316,37 @@ function func_AuthenticationRequest(ws, randstr, rows, result) {
                   logger.error("#bin.www.func_authenticationRequest: %s", error);
                   throw(error);
                 } else {
-                  if (rows1.length == 1) {
-                    jstring = "{\n" +
-                        "  \"@class\" : \".AuthenticationResponse\",\n" +
-                        "  \"authToken\" : \"" + randstr + "\",\n" +
-                        "  \"displayName\" : \"" + rows[0].displayname + "\",\n" +
-                        "  \"newPlayer\" : false,\n" +
-                        "  \"userId\" : \"" + rows[0].id + "\",\n" +
-                        "  \"gameId\" : \"" + rows1[0].id + "\",\n" +
-                        "  \"wage\" : \"" + rows1[0].asset_wage + "\",\n" +
-                        "  \"requestId\" : \"" + result['requestId'] + "\"\n" +
-                        "}";
-                    ws.send(jstring);
-                    // Update the entry with the authtoken
-                    var vsql = "UPDATE user SET authtoken=" + pool.escape(randstr) + " WHERE id=" + rows[0].id;
-                    pool.query(vsql, function (error, rows1, fields) {
-                      if (error) {
-                        logger.error('#bin.www.func_authenticationRequest: Error: %s', error);
-                        throw error;
-                      }
-                    });
-                  } else {
-                    jstring = "{\n" +
-                        "  \"@class\" : \".AuthenticationResponse\",\n" +
-                        "  \"authToken\" : \"" + randstr + "\",\n" +
-                        "  \"error\":{\"details\":\"API key not matching.\"}," +
-                        "  \"requestId\" : \"" + result['requestId'] + "\"\n" +
-                        "}";
-                    ws.send(jstring);
-                  }
+                  // Update the entry with the authtoken
+                  var vsql = "UPDATE user SET authtoken=" + pool.escape(randstr) + " WHERE id=" + rows[0].id;
+                  logger.info("SQL: %s", vsql);
+                  pool.query(vsql, function (error, rows2, fields) {
+                    if (error) {
+                      logger.error('#bin.www.func_authenticationRequest: Error: %s', error);
+                      throw error;
+                    }
+                    if (rows1.length == 1) {
+                      jstring = "{\n" +
+                          "  \"@class\" : \".AuthenticationResponse\",\n" +
+                          "  \"authToken\" : \"" + randstr + "\",\n" +
+                          "  \"displayName\" : \"" + rows[0].displayname + "\",\n" +
+                          "  \"newPlayer\" : false,\n" +
+                          "  \"userId\" : \"" + rows[0].id + "\",\n" +
+                          "  \"gameId\" : \"" + rows1[0].id + "\",\n" +
+                          "  \"wage\" : \"" + rows1[0].asset_wage + "\",\n" +
+                          "  \"requestId\" : \"" + result['requestId'] + "\"\n" +
+                          "}";
+                      ws.send(jstring);
+                    }
+                  });
                 }
               });
+
 
             } else {
               logger.warn("#bin.www.func_authenticationRequest: User / password do not match");
               jstring = "{\n" +
                   "  \"@class\":\".AuthenticationResponse\"," +
-                  "  \"error\":{\"details\":\"User password unrecognized\"}," +
-                  "  \"newPlayer\":false," +
+                  "  \"error\":{\"details\":\"User password unrecognized.\"}," +
                   "  \"requestId\" : \"" + result['requestId'] + "\"\n" +
                   "}";
               ws.send(jstring);
@@ -308,7 +359,7 @@ function func_AuthenticationRequest(ws, randstr, rows, result) {
           logger.warn("#bin.www.func_authenticationRequest: User password not found");
           jstring = "{\n" +
               "  \"@class\":\".AuthenticationResponse\"," +
-              "  \"error\":{\"details\":\"User password unrecognized\"}," +
+              "  \"error\":{\"details\":\"User password unrecognized.\"}," +
               "  \"newPlayer\":false," +
               "  \"requestId\" : \"" + result['requestId'] + "\"\n" +
               "}";
@@ -322,7 +373,7 @@ function func_AuthenticationRequest(ws, randstr, rows, result) {
         logger.warn("#bin.www.func_authenticationRequest: User name not found");
         jstring = "{\n" +
             "  \"@class\":\".AuthenticationResponse\"," +
-            "  \"error\":{\"details\":\"User name unrecognized\"}," +
+            "  \"error\":{\"details\":\"User name unrecognized.\"}," +
             "  \"newPlayer\":false," +
             "  \"requestId\" : \"" + result['requestId'] + "\"\n" +
             "}";
@@ -341,19 +392,29 @@ function func_AccountDetailsRequest(ws, randstr, rows, result) {
   var jstring;
   var authtoken=result['authToken'];
 
-  var vsql = "SELECT * FROM user WHERE authtoken=" + pool.escape(authtoken);
+  var vsql = "SELECT * FROM user WHERE authtoken LIKE " + pool.escape(authtoken);
   logger.info("#bin.www.func_AccountDetailsRequest: SQL: %s", vsql);
   pool.query(vsql, function (error, rows, fields) {
     if (error) {
       logger.error('#bin.www.func_AccountDetailsRequest: Error: %s', error);
       throw error;
     }
+    logger.info("#bin.www.func_AccountDetailsRequest: rows.length: %s",rows.length);
     if (rows.length == 1) {
       logger.info("#bin.www.func_AccountDetailsRequest: Authenticated");
       jstring = "{\n" +
           "  \"@class\" : \".AccountDetailsResponse\",\n" +
           "  \"value\" : " + rows[0].athamount + ",\n" +
           "  \"currency\" : \"ATH\",\n" +
+          "  \"requestId\" : \"" + result['requestId'] + "\"\n" +
+          "}";
+      ws.send(jstring);
+    } else {
+      logger.warn("#bin.www.func_AccountDetailsRequest: Failed authentication");
+      jstring = "{\n" +
+          "  \"@class\" : \".AuthenticationResponse\",\n" +
+          "  \"authToken\" : \"" + authtoken + "\",\n" +
+          "  \"error\":{\"details\":\"Authentication not correct.\"}," +
           "  \"requestId\" : \"" + result['requestId'] + "\"\n" +
           "}";
       ws.send(jstring);
@@ -454,6 +515,16 @@ function func_SetWageRequest(ws, req, randstr, rows, result) {
           }
         });
       }
+    } else {
+      jstring = "{\n" +
+          "  \"@class\" : \".SetWageResponse\",\n" +
+          "  \"authToken\" : \"" + result['authToken'] + "\",\n" +
+          "  \"error\":{\"details\":\"Athentication failing\"}," +
+          "  \"requestId\" : \"" + result['requestId'] + "\"\n" +
+          "}";
+      ws.send(jstring);
+      logger.error("#bin.www.func_SetWageRequest: Authentication failing: %s", result['authToken']);
+
     }
   });
 }
@@ -468,26 +539,45 @@ function func_FinishGameRequest(ws, randstr, rows, result) {
   var authtoken=result['authToken'];
   var score=parseInt(result['scoreValue']);
 
-  // gameplay option == 2 means that the game is valid but not yet paid out
-  // bit 3 will be set if game is gone through resolution
-  var vsql = "UPDATE gameplay SET gameplay_score=" + pool.escape(score) + ", gameplay_end_date='" + pool.mysqlNow() + "', gameplay_options=2 WHERE id=" + pool.escape(playid) + " AND authtoken LIKE " + pool.escape(authtoken);
-  logger.info("#bin.www.func_FinishGameRequest: SQL: %s", vsql);
-  pool.query(vsql, function (error, rows2, fields) {
-    if (error) {
-      logger.error('#bin.www.func_SetWageRequest: Error: %s', error);
-      throw error;
-    }
-
-    logger.info("#bin.www.func_SetWageRequest: Found Finish game.");
+  if (playid=="") {
     jstring = "{\n" +
         "  \"@class\" : \".FinishGameResponse\",\n" +
         "  \"authToken\" : \"" + result['authToken'] + "\",\n" +
-        "  \"status\" : \"OK\",\n" +
-        "  \"reason\" : \"\",\n" +
+        "  \"error\":{\"details\":\"PlayId not properly set\"}," +
         "  \"requestId\" : \"" + result['requestId'] + "\"\n" +
         "}";
     ws.send(jstring);
-  });
+  } else {
+    if(authtoken=="") {
+      jstring = "{\n" +
+          "  \"@class\" : \".FinishGameResponse\",\n" +
+          "  \"authToken\" : \"" + result['authToken'] + "\",\n" +
+          "  \"error\":{\"details\":\"authToken not properly set.\"}," +
+          "  \"requestId\" : \"" + result['requestId'] + "\"\n" +
+          "}";
+      ws.send(jstring);
+    } else {
+      // Everything is good
+      var vsql = "UPDATE gameplay SET gameplay_score=" + pool.escape(score) + ", gameplay_end_date='" + pool.mysqlNow() + "', gameplay_options=2 WHERE id=" + pool.escape(playid) + " AND authtoken LIKE " + pool.escape(authtoken);
+      logger.info("#bin.www.func_FinishGameRequest: SQL: %s", vsql);
+      pool.query(vsql, function (error, rows2, fields) {
+        if (error) {
+          logger.error('#bin.www.func_FinishGameRequest: Error: %s', error);
+          throw error;
+        }
+        logger.info("#bin.www.func_SetWageRequest: Found Finish game.");
+        jstring = "{\n" +
+            "  \"@class\" : \".FinishGameResponse\",\n" +
+            "  \"authToken\" : \"" + result['authToken'] + "\",\n" +
+            "  \"status\" : \"OK\",\n" +
+            "  \"requestId\" : \"" + result['requestId'] + "\"\n" +
+            "}";
+        ws.send(jstring);
+      });
+
+
+    }
+  }
 
 }
 
@@ -498,115 +588,130 @@ function func_GameLadderRequest(ws, randstr, rows, result) {
   var jstring;
   var gameid = parseInt(result['gameId']);
   var userid = parseInt(result['userId']);
+  var authtoken=result['authToken'];
+
 
   logger.info("Found GameLadder");
 
   // First we find the latest game
-  var sql = "SELECT * FROM gameplay WHERE gameplay_options=2 AND gameasset_id=" + pool.escape(gameid) + " ORDER BY gameplay_end_date DESC LiMIT 1";
+  var sql = "SELECT * FROM gameplay WHERE gameplay_options=2 AND userid=" + pool.escape(userid) + " AND gameasset_id=" + pool.escape(gameid) + " ORDER BY gameplay_end_date DESC LiMIT 1";
   logger.info("SQL: %s", sql);
   pool.query(sql, function (error, rows2, fields) {
     if (error) {
       logger.error('#bin.www.func_GameLadderRequest: Error: %s', error);
       throw error;
     }
-
-    var sql = "SELECT *, DATE_FORMAT(gameplay_end_date,'%Y-%m-%d') AS date FROM gameplay WHERE gameplay_options=2 AND gameasset_id=" + pool.escape(gameid) + " ORDER BY gameplay_score DESC";
-    logger.info("#bin.www.func_GameLadderRequest: SQL: %s", sql);
-    pool.query(sql, function (error, rows, fields) {
-      if (error) {
-        logger.error('#bin.www.func_GameLadderRequest: Error: %s', error);
-        throw error;
-      }
-      var vsql = "SELECT * FROM user ORDER BY id";
-      logger.info("#bin.www.func_GameLadderRequest: SQL: %s", vsql);
-      pool.query(vsql, function (error, rows1, fields) {
+    if (rows2.length>=1) {
+      var sql = "SELECT *, DATE_FORMAT(gameplay_end_date,'%Y-%m-%d') AS date FROM gameplay WHERE gameplay_options=2 AND gameasset_id=" + pool.escape(gameid) + " ORDER BY gameplay_score DESC";
+      logger.info("#bin.www.func_GameLadderRequest: SQL: %s", sql);
+      pool.query(sql, function (error, rows, fields) {
         if (error) {
           logger.error('#bin.www.func_GameLadderRequest: Error: %s', error);
           throw error;
         }
-
-        var i, j;
-        var inplay = 0;
-        var nrofgames = rows.length;
-        var ladder = "";
-        // Now we search for the latest game
-        if (nrofgames > 0) {
-          for (j = 0; j < rows.length; j++) {
-            inplay += rows[j].amount;
-          }
-          for (j = 0; j < rows.length; j++) {
-            if (rows2[0].id === rows[j].id)
-              break;
-          }
-          var k = rows[j].userid;
-          ladder += "{\n" +
-              "  \"position\" : \"" + (j + 1) + "\",\n" +
-              "  \"score\" : \"" + rows[j].gameplay_score + "\",\n" +
-              "  \"displayname\" : \"" + rows1[k - 1].displayname + "\",\n" +
-              "  \"amount\" : \"" + rows[j].amount + "\",\n" +
-              "  \"date\" : \"" + rows[j].date + "\"\n" +
-              "},";
-
-          if (nrofgames < 5) {
-            for (i = 0; i < rows.length; i++) {
-              k = rows[i].userid;
-              ladder += "{\n" +
-                  "  \"position\" : \"" + (i + 1) + "\",\n" +
-                  "  \"score\" : \"" + rows[i].gameplay_score + "\",\n" +
-                  "  \"displayname\" : \"" + rows1[k - 1].displayname + "\",\n" +
-                  "  \"amount\" : \"" + rows[i].amount + "\",\n" +
-                  "  \"date\" : \"" + rows[i].date + "\"\n" +
-                  "},";
-            }
-          } else {
-            for (i = 0; i < 5; i++) {
-              k = rows[i].userid;
-              ladder += "{\n" +
-                  "  \"position\" : \"" + (i + 1) + "\",\n" +
-                  "  \"score\" : \"" + rows[i].gameplay_score + "\",\n" +
-                  "  \"displayname\" : \"" + rows1[k - 1].displayname + "\",\n" +
-                  "  \"amount\" : \"" + rows[i].amount + "\",\n" +
-                  "  \"date\" : \"" + rows[i].date + "\"\n" +
-                  "},";
-            }
-            for (j = i; j < rows.length; j++) {
-              k = rows[j].userid;
-              ladder += "{\n" +
-                  "  \"position\" : \"" + (j + 1) + "\",\n" +
-                  "  \"score\" : \"" + rows[j].gameplay_score + "\",\n" +
-                  "  \"displayname\" : \"" + rows1[k - 1].displayname + "\",\n" +
-                  "  \"amount\" : \"" + rows[j].amount + "\",\n" +
-                  "  \"date\" : \"" + rows[j].date + "\"\n" +
-                  "},";
-            }
-          }
-          ladder = ladder.slice(0, -1);
-        } else {
-          ladder = "";
-        }
-        var sql = "SELECT *,TIMESTAMPDIFF(SECOND, asset_resolution, UTC_TIMESTAMP()) AS secs FROM gameasset WHERE asset_ready=2 AND id=" + pool.escape(gameid);
-        logger.info("#bin.www.func_GameLadderRequest: SQL: %s", sql);
-        pool.query(sql, async (error, rows, fields) => {
+        var vsql = "SELECT * FROM user ORDER BY id";
+        logger.info("#bin.www.func_GameLadderRequest: SQL: %s", vsql);
+        pool.query(vsql, function (error, rows1, fields) {
           if (error) {
-            logger.error("#bin.www.func_GameLadderRequest: %s", error);
-            throw(error);
-          } else {
-            logger.info("#bin.www.func_GameLadderRequest: %s",rows[0]);
-            var timeleft=rows[0].asset_periode*3600-rows[0].secs;
-            jstring = "{\n" +
-                "  \"@class\" : \".GameLadderResponse\",\n" +
-                "  \"authToken\" : \"" + result['authToken'] + "\",\n" +
-                "  \"requestId\" : \"" + result['requestId'] + "\",\n" +
-                "  \"totalGames\" : " + nrofgames + ",\n" +
-                "  \"inPlay\" : " + inplay + ",\n" +
-                "  \"timeLeft\" : " + timeleft + ",\n" +
-                "  \"ladder\" : [\n" + ladder + "]\n" +
-                "}";
-            ws.send(jstring);
+            logger.error('#bin.www.func_GameLadderRequest: Error: %s', error);
+            throw error;
           }
+
+          var i, j;
+          var inplay = 0;
+          var nrofgames = rows.length;
+          var ladder = "";
+          // Now we search for the latest game
+          if (nrofgames > 0) {
+            for (j = 0; j < rows.length; j++) {
+              inplay += rows[j].amount;
+            }
+            for (j = 0; j < rows.length; j++) {
+              if (rows2[0].id === rows[j].id)
+                break;
+            }
+            var k = rows[j].userid;
+            ladder += "{\n" +
+                "  \"position\" : \"" + (j + 1) + "\",\n" +
+                "  \"score\" : \"" + rows[j].gameplay_score + "\",\n" +
+                "  \"displayname\" : \"" + rows1[k - 1].displayname + "\",\n" +
+                "  \"amount\" : \"" + rows[j].amount + "\",\n" +
+                "  \"date\" : \"" + rows[j].date + "\"\n" +
+                "},";
+
+            if (nrofgames < 5) {
+              for (i = 0; i < rows.length; i++) {
+                k = rows[i].userid;
+                ladder += "{\n" +
+                    "  \"position\" : \"" + (i + 1) + "\",\n" +
+                    "  \"score\" : \"" + rows[i].gameplay_score + "\",\n" +
+                    "  \"displayname\" : \"" + rows1[k - 1].displayname + "\",\n" +
+                    "  \"amount\" : \"" + rows[i].amount + "\",\n" +
+                    "  \"date\" : \"" + rows[i].date + "\"\n" +
+                    "},";
+              }
+            } else {
+              for (i = 0; i < 5; i++) {
+                k = rows[i].userid;
+                ladder += "{\n" +
+                    "  \"position\" : \"" + (i + 1) + "\",\n" +
+                    "  \"score\" : \"" + rows[i].gameplay_score + "\",\n" +
+                    "  \"displayname\" : \"" + rows1[k - 1].displayname + "\",\n" +
+                    "  \"amount\" : \"" + rows[i].amount + "\",\n" +
+                    "  \"date\" : \"" + rows[i].date + "\"\n" +
+                    "},";
+              }
+              for (j = i; j < rows.length; j++) {
+                k = rows[j].userid;
+                ladder += "{\n" +
+                    "  \"position\" : \"" + (j + 1) + "\",\n" +
+                    "  \"score\" : \"" + rows[j].gameplay_score + "\",\n" +
+                    "  \"displayname\" : \"" + rows1[k - 1].displayname + "\",\n" +
+                    "  \"amount\" : \"" + rows[j].amount + "\",\n" +
+                    "  \"date\" : \"" + rows[j].date + "\"\n" +
+                    "},";
+              }
+            }
+            ladder = ladder.slice(0, -1);
+          } else {
+            ladder = "";
+          }
+          var sql = "SELECT *,TIMESTAMPDIFF(SECOND, asset_resolution, UTC_TIMESTAMP()) AS secs FROM gameasset WHERE asset_ready=2 AND id=" + pool.escape(gameid);
+          logger.info("#bin.www.func_GameLadderRequest: SQL: %s", sql);
+          pool.query(sql, async (error, rows, fields) => {
+            if (error) {
+              logger.error("#bin.www.func_GameLadderRequest: %s", error);
+              throw(error);
+            } else {
+              logger.info("#bin.www.func_GameLadderRequest: %s", rows[0]);
+              var timeleft = rows[0].asset_periode * 3600 - rows[0].secs;
+              jstring = "{\n" +
+                  "  \"@class\" : \".GameLadderResponse\",\n" +
+                  "  \"authToken\" : \"" + result['authToken'] + "\",\n" +
+                  "  \"requestId\" : \"" + result['requestId'] + "\",\n" +
+                  "  \"totalGames\" : " + nrofgames + ",\n" +
+                  "  \"inPlay\" : " + inplay + ",\n" +
+                  "  \"timeLeft\" : " + timeleft + ",\n" +
+                  "  \"ladder\" : [\n" + ladder + "]\n" +
+                  "}";
+              ws.send(jstring);
+            }
+          });
         });
       });
-    });
+    } else {
+      jstring = "{\n" +
+          "  \"@class\" : \".SetWageResponse\",\n" +
+          "  \"authToken\" : \"" + result['authToken'] + "\",\n" +
+          "  \"error\":{\"details\":\"Authentication is failing.\"}," +
+          "  \"requestId\" : \"" + result['requestId'] + "\"\n" +
+          "}";
+      ws.send(jstring);
+      logger.error("#bin.www.func_SetWageRequest: Authentication is failing: %s", result['authToken']);
+
+    }
   });
-};
+}
+
+
 
